@@ -257,6 +257,6 @@ jobs:
             exit 0
           fi
           git commit -m "Update TFT assets for version ${VERSION} on $(date +'%d-%m-%Y')"
-          git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/hoangdieu606/tft.git
+          git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/hoangdieu606/currency.git
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
