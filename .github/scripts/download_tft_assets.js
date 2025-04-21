@@ -2,6 +2,7 @@ const axios = require('axios');
 const fs = require('fs').promises;
 const path = require('path');
 const url = require('url');
+const PQueue = require('p-queue');
 
 async function getCurrentVersion() {
   try {
@@ -18,16 +19,18 @@ async function saveCurrentVersion(version) {
 
 async function downloadImage(imageUrl, savePath) {
   try {
-    const response = await axios.get(imageUrl, { responseType: 'stream', timeout: 30000 });
+    const response = await axios.get(imageUrl, { responseType: 'stream', timeout: 60000 });
     if (response.status === 200) {
       await fs.mkdir(path.dirname(savePath), { recursive: true });
       const writer = require('fs').createWriteStream(savePath);
       response.data.pipe(writer);
       await new Promise((resolve, reject) => {
-        writer.on('finish', resolve);
+        writer.on('finish', () => {
+          console.log(`Đã tải thành công: ${savePath}`);
+          resolve();
+        });
         writer.on('error', reject);
       });
-      console.log(`Đã tải: ${savePath}`);
     } else {
       console.error(`Tải thất bại: ${imageUrl}, status: ${response.status}`);
     }
@@ -36,14 +39,14 @@ async function downloadImage(imageUrl, savePath) {
   }
 }
 
-async function fetchWithRetry(url, retries = 3, delay = 1000) {
+async function fetchWithRetry(url, retries = 5, delay = 5000) {
   for (let i = 0; i < retries; i++) {
     try {
-      const response = await axios.get(url, { timeout: 30000 });
+      const response = await axios.get(url, { timeout: 60000 });
       return response;
     } catch (error) {
       if (i === retries - 1) throw error;
-      console.log(`Thử lại ${url} sau ${delay}ms...`);
+      console.log(`Thử lại ${url} lần ${i + 1}/${retries} sau ${delay}ms...`);
       await new Promise(resolve => setTimeout(resolve, delay));
     }
   }
@@ -62,14 +65,17 @@ async function processApi(apiUrl, setNumber, outputDir) {
       if (item.skillImageUrl) images.push(item.skillImageUrl);
     });
 
-    const MAX_IMAGES = 50;
-    await Promise.all(
-      images.slice(0, MAX_IMAGES).map(async (imgUrl) => {
+    console.log(`Chuẩn bị tải ${images.length} ảnh từ ${apiUrl}...`);
+    // Giới hạn 5 request đồng thời để tránh rate limit
+    const queue = new PQueue({ concurrency: 5 });
+    await queue.addAll(
+      images.map(imgUrl => async () => {
         const filename = path.basename(url.parse(imgUrl).pathname);
         const savePath = path.join(outputDir, filename);
         await downloadImage(imgUrl, savePath);
       })
     );
+    console.log(`Hoàn tất tải ${images.length} ảnh từ ${apiUrl}`);
   } catch (error) {
     console.error(`Lỗi xử lý API ${apiUrl}: ${error.message}`);
   }
