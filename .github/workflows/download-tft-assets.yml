@@ -1,8 +1,6 @@
 name: Download TFT Assets
 
 on:
-  schedule:
-    - cron: '0 00 * * *' # Chạy lúc 00:00 UTC
   workflow_dispatch:
 
 concurrency:
@@ -196,11 +194,6 @@ jobs:
             const newVersion = response.data.version || '0.0';
             const setNumber = response.data.set;
             const currentVersion = await getCurrentVersion();
-
-            if (newVersion === currentVersion) {
-              console.log('Version không thay đổi, bỏ qua tải assets');
-              return;
-            }
 
             console.log(`Phát hiện version: ${newVersion}. Bắt đầu tải assets...`);
             const baseDir = `public/assets/images/set${setNumber}`;
