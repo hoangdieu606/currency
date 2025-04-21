@@ -1,0 +1,163 @@
+name: Download TFT Assets
+
+on:
+  schedule:
+    - cron: '0 0 * * *' # Chạy hàng ngày lúc nửa đêm
+  workflow_dispatch: # Cho phép kích hoạt thủ công
+
+jobs:
+  download-assets:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Lấy toàn bộ lịch sử để xử lý rebase
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm install axios
+
+      - name: Kiểm tra trạng thái repository và xử lý thay đổi chưa commit
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          if ! git diff --quiet || ! git diff --staged --quiet; then
+            git add .
+            git commit -m "Commit các thay đổi chưa được commit trước khi pull"
+          fi
+
+      - name: Pull với rebase từ remote
+        run: |
+          git pull --rebase origin main
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tạo script JavaScript để kiểm tra version và tải assets
+        run: |
+          mkdir -p .github/scripts
+          cat << 'EOF' > .github/scripts/download_tft_assets.js
+          const axios = require('axios');
+          const fs = require('fs').promises;
+          const path = require('path');
+          const url = require('url');
+
+          async function getCurrentVersion() {
+            try {
+              const data = await fs.readFile('version.json', 'utf8');
+              return JSON.parse(data).version || '0.0';
+            } catch (error) {
+              return '0.0';
+            }
+          }
+
+          async function saveCurrentVersion(version) {
+            await fs.writeFile('version.json', JSON.stringify({ version }));
+          }
+
+          async function downloadImage(imageUrl, savePath) {
+            try {
+              const response = await axios.get(imageUrl, { responseType: 'stream' });
+              if (response.status === 200) {
+                await fs.mkdir(path.dirname(savePath), { recursive: true });
+                const writer = require('fs').createWriteStream(savePath);
+                response.data.pipe(writer);
+                await new Promise((resolve, reject) => {
+                  writer.on('finish', resolve);
+                  writer.on('error', reject);
+                });
+                console.log(`Đã tải: ${savePath}`);
+              } else {
+                console.log(`Tải thất bại: ${imageUrl}`);
+              }
+            } catch (error) {
+              console.log(`Lỗi khi tải ${imageUrl}: ${error.message}`);
+            }
+          }
+
+          async function processApi(apiUrl, setNumber, outputDir) {
+            try {
+              const response = await axios.get(apiUrl);
+              if (response.status === 200) {
+                const images = [];
+                response.data.data.forEach(item => {
+                  if (item.imageUrl) images.push(item.imageUrl);
+                  if (item.skillImageUrl) images.push(item.skillImageUrl); // Dành cho API champions
+                });
+
+                for (const imgUrl of images) {
+                  const filename = path.basename(url.parse(imgUrl).pathname);
+                  const savePath = path.join(outputDir, filename);
+                  await downloadImage(imgUrl, savePath);
+                }
+              } else {
+                console.log(`Gọi API thất bại: ${apiUrl}`);
+              }
+            } catch (error) {
+              console.log(`Lỗi xử lý API ${apiUrl}: ${error.message}`);
+            }
+          }
+
+          async function main() {
+            const apis = [
+              'https://tft-api.op.gg/api/v1/meta/champions?hl=vi_VN',
+              'https://tft-api.op.gg/api/v1/meta/traits?hl=vi_VN',
+              'https://tft-api.op.gg/api/v1/meta/augments?hl=vi_VN',
+              'https://tft-api.op.gg/api/v1/meta/items?hl=vi_VN'
+            ];
+
+            // Lấy version và set từ API đầu tiên
+            const response = await axios.get(apis[0]).catch(err => {
+              console.log(`Không thể lấy version từ API: ${err.message}`);
+              return null;
+            });
+            if (!response) return;
+
+            const newVersion = response.data.version || '0.0';
+            const setNumber = response.data.set; // Lấy set từ API
+            const currentVersion = await getCurrentVersion();
+
+            if (newVersion === currentVersion) {
+              console.log('Version không thay đổi, bỏ qua tải assets');
+              return;
+            }
+
+            console.log(`Phát hiện version mới: ${newVersion}. Bắt đầu tải assets...`);
+            const outputDir = `public/assets/images/set${setNumber}`;
+            await fs.mkdir(outputDir, { recursive: true });
+
+            for (const apiUrl of apis) {
+              await processApi(apiUrl, setNumber, outputDir);
+            }
+
+            // Lưu version mới
+            await saveCurrentVersion(newVersion);
+          }
+
+          main().catch(error => {
+            console.error(`Lỗi chính: ${error.message}`);
+            process.exit(1);
+          });
+          EOF
+
+      - name: Chạy script tải assets
+        run: node .github/scripts/download_tft_assets.js
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Commit và push thay đổi
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          git add public/assets/images/* version.json
+          if ! git diff --quiet || ! git diff --staged --quiet; then
+            git commit -m "Cập nhật assets TFT cho set${{ env.SET_NUMBER }} và version mới"
+            git push
+          else
+            echo "Không có thay đổi để commit"
+          fi
