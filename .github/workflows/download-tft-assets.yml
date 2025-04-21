@@ -73,32 +73,40 @@ jobs:
             await fs.writeFile('version.json', JSON.stringify({ version }));
           }
 
-          async function downloadImage(imageUrl, savePath) {
-            try {
-              const response = await axios.get(imageUrl, { responseType: 'stream', timeout: 60000 });
-              if (response.status === 200) {
-                await fs.mkdir(path.dirname(savePath), { recursive: true });
-                const writer = require('fs').createWriteStream(savePath);
-                response.data.pipe(writer);
-                await new Promise((resolve, reject) => {
-                  writer.on('finish', () => {
-                    console.log(`Đã tải thành công: ${savePath}`);
-                    resolve();
+          async function downloadImageWithRetry(imageUrl, savePath, retries = 5, delay = 10000) {
+            for (let i = 0; i < retries; i++) {
+              try {
+                const response = await axios.get(imageUrl, { responseType: 'stream', timeout: 90000 });
+                if (response.status === 200) {
+                  await fs.mkdir(path.dirname(savePath), { recursive: true });
+                  const writer = require('fs').createWriteStream(savePath);
+                  response.data.pipe(writer);
+                  await new Promise((resolve, reject) => {
+                    writer.on('finish', () => {
+                      console.log(`Đã tải thành công: ${savePath}`);
+                      resolve();
+                    });
+                    writer.on('error', reject);
                   });
-                  writer.on('error', reject);
-                });
-              } else {
-                console.error(`Tải thất bại: ${imageUrl}, status: ${response.status}`);
+                  return true;
+                } else {
+                  throw new Error(`Tải thất bại: ${imageUrl}, status: ${response.status}`);
+                }
+              } catch (error) {
+                if (i === retries - 1) {
+                  console.error(`Lỗi khi tải ${imageUrl} sau ${retries} lần thử: ${error.message}`);
+                  return false;
+                }
+                console.log(`Thử lại tải ${imageUrl} lần ${i + 1}/${retries} sau ${delay}ms...`);
+                await new Promise(resolve => setTimeout(resolve, delay));
               }
-            } catch (error) {
-              console.error(`Lỗi khi tải ${imageUrl}: ${error.message}`);
             }
           }
 
-          async function fetchWithRetry(url, retries = 5, delay = 5000) {
+          async function fetchWithRetry(url, retries = 5, delay = 10000) {
             for (let i = 0; i < retries; i++) {
               try {
-                const response = await axios.get(url, { timeout: 60000 });
+                const response = await axios.get(url, { timeout: 90000 });
                 return response;
               } catch (error) {
                 if (i === retries - 1) throw error;
@@ -108,44 +116,55 @@ jobs:
             }
           }
 
-          async function processApi(apiUrl, setNumber, outputDir) {
+          async function processApi(apiUrl, setNumber, subDir) {
+            const outputDir = `public/assets/images/set${setNumber}/${subDir}`;
+            let successCount = 0;
+            let failCount = 0;
+
             try {
               const response = await fetchWithRetry(apiUrl);
               if (response.status !== 200) {
                 console.error(`Gọi API thất bại: ${apiUrl}, status: ${response.status}`);
-                return;
+                return { successCount, failCount };
               }
+
               const images = [];
               response.data.data.forEach(item => {
                 if (item.imageUrl) images.push(item.imageUrl);
                 if (item.skillImageUrl) images.push(item.skillImageUrl);
               });
 
-              console.log(`Chuẩn bị tải ${images.length} ảnh từ ${apiUrl}...`);
-              // Giới hạn 5 request đồng thời để tránh rate limit
-              const queue = new PQueue({ concurrency: 5 });
+              console.log(`Chuẩn bị tải ${images.length} ảnh từ ${apiUrl} vào ${outputDir}...`);
+              const queue = new PQueue({ concurrency: 3 });
               await queue.addAll(
                 images.map(imgUrl => async () => {
                   const filename = path.basename(url.parse(imgUrl).pathname);
                   const savePath = path.join(outputDir, filename);
-                  await downloadImage(imgUrl, savePath);
+                  const success = await downloadImageWithRetry(imgUrl, savePath);
+                  if (success) {
+                    successCount++;
+                  } else {
+                    failCount++;
+                  }
                 })
               );
-              console.log(`Hoàn tất tải ${images.length} ảnh từ ${apiUrl}`);
+              console.log(`Hoàn tất tải từ ${apiUrl}: ${successCount} thành công, ${failCount} thất bại`);
+              return { successCount, failCount };
             } catch (error) {
               console.error(`Lỗi xử lý API ${apiUrl}: ${error.message}`);
+              return { successCount, failCount };
             }
           }
 
           async function main() {
-            const apis = [
-              'https://tft-api.op.gg/api/v1/meta/champions?hl=vi_VN',
-              'https://tft-api.op.gg/api/v1/meta/traits?hl=vi_VN',
-              'https://tft-api.op.gg/api/v1/meta/augments?hl=vi_VN',
-              'https://tft-api.op.gg/api/v1/meta/items?hl=vi_VN'
+            const apiConfigs = [
+              { url: 'https://tft-api.op.gg/api/v1/meta/champions?hl=vi_VN', subDir: 'champions' },
+              { url: 'https://tft-api.op.gg/api/v1/meta/traits?hl=vi_VN', subDir: 'traits' },
+              { url: 'https://tft-api.op.gg/api/v1/meta/augments?hl=vi_VN', subDir: 'augments' },
+              { url: 'https://tft-api.op.gg/api/v1/meta/items?hl=vi_VN', subDir: 'items' }
             ];
 
-            const response = await fetchWithRetry(apis[0]).catch(err => {
+            const response = await fetchWithRetry(apiConfigs[0].url).catch(err => {
               console.error(`Không thể lấy version từ API: ${err.message}`);
               return null;
             });
@@ -161,14 +180,19 @@ jobs:
             }
 
             console.log(`Phát hiện version mới: ${newVersion}. Bắt đầu tải assets...`);
-            const outputDir = `public/assets/images/set${setNumber}`;
-            await fs.rm(outputDir, { recursive: true, force: true }).catch(() => {});
-            await fs.mkdir(outputDir, { recursive: true });
+            const baseDir = `public/assets/images/set${setNumber}`;
+            await fs.rm(baseDir, { recursive: true, force: true }).catch(() => {});
+            await fs.mkdir(baseDir, { recursive: true });
 
-            for (const apiUrl of apis) {
-              await processApi(apiUrl, setNumber, outputDir);
+            let totalSuccess = 0;
+            let totalFail = 0;
+            for (const { url, subDir } of apiConfigs) {
+              const { successCount, failCount } = await processApi(url, setNumber, subDir);
+              totalSuccess += successCount;
+              totalFail += failCount;
             }
 
+            console.log(`Tổng kết: ${totalSuccess} ảnh tải thành công, ${totalFail} ảnh thất bại`);
             await saveCurrentVersion(newVersion);
           }
 
@@ -185,7 +209,14 @@ jobs:
 
       - name: Kiểm tra số lượng ảnh và kích thước thư mục
         run: |
-          echo "Số lượng ảnh tải được:"
+          echo "Số lượng ảnh tải được trong mỗi thư mục:"
+          for dir in public/assets/images/set*/champions public/assets/images/set*/traits public/assets/images/set*/augments public/assets/images/set*/items; do
+            if [ -d "$dir" ]; then
+              count=$(find "$dir" -type f | wc -l)
+              echo "$dir: $count ảnh"
+            fi
+          done
+          echo "Tổng số ảnh tải được:"
           find public/assets/images/set* -type f | wc -l
           echo "Kích thước thư mục:"
           du -sh public/assets/images/set*
