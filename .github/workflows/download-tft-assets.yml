@@ -1,8 +1,6 @@
 name: Download TFT Assets
 
 on:
-  schedule:
-    - cron: '0 00 * * *' # Chạy lúc 00:00 UTC
   workflow_dispatch:
 
 concurrency:
@@ -53,7 +51,7 @@ jobs:
       - name: Tạo script JavaScript
         run: |
           mkdir -p .github/scripts
-          cat << 'EOF' > .github/scripts/download_tft_assets.js
+          cat << 'EOF' > .github/scripts/download_tft_assets.cjs
           const axios = require('axios');
           const fs = require('fs').promises;
           const path = require('path');
@@ -73,17 +71,34 @@ jobs:
             await fs.writeFile('version.json', JSON.stringify({ version }));
           }
 
+          // Hàm tạo tên file duy nhất để tránh ghi đè
+          async function getUniqueFilePath(savePath) {
+            let newPath = savePath;
+            let counter = 1;
+            const ext = path.extname(savePath);
+            const base = path.basename(savePath, ext);
+            const dir = path.dirname(savePath);
+
+            while (await fs.access(newPath).then(() => true).catch(() => false)) {
+              newPath = path.join(dir, `${base}_${counter}${ext}`);
+              counter++;
+            }
+            return newPath;
+          }
+
           async function downloadImageWithRetry(imageUrl, savePath, retries = 5, delay = 10000) {
             for (let i = 0; i < retries; i++) {
               try {
                 const response = await axios.get(imageUrl, { responseType: 'stream', timeout: 90000 });
                 if (response.status === 200) {
                   await fs.mkdir(path.dirname(savePath), { recursive: true });
-                  const writer = require('fs').createWriteStream(savePath);
+                  // Tạo tên file duy nhất nếu file đã tồn tại
+                  const uniquePath = await getUniqueFilePath(savePath);
+                  const writer = require('fs').createWriteStream(uniquePath);
                   response.data.pipe(writer);
                   await new Promise((resolve, reject) => {
                     writer.on('finish', () => {
-                      console.log(`Đã tải thành công: ${savePath}`);
+                      console.log(`Đã tải thành công: ${uniquePath}`);
                       resolve();
                     });
                     writer.on('error', reject);
@@ -180,11 +195,10 @@ jobs:
             const setNumber = response.data.set;
             const currentVersion = await getCurrentVersion();
 
-            // Tạm thời comment logic bỏ qua tải ảnh để test
-            // if (newVersion === currentVersion) {
-            //   console.log('Version không thay đổi, bỏ qua tải assets');
-            //   return;
-            // }
+            if (newVersion === currentVersion) {
+              console.log('Version không thay đổi, bỏ qua tải assets');
+              return;
+            }
 
             console.log(`Phát hiện version: ${newVersion}. Bắt đầu tải assets...`);
             const baseDir = `public/assets/images/set${setNumber}`;
@@ -213,7 +227,7 @@ jobs:
           EOF
 
       - name: Chạy script tải assets
-        run: node .github/scripts/download_tft_assets.js
+        run: node .github/scripts/download_tft_assets.cjs
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -241,6 +255,6 @@ jobs:
             exit 0
           fi
           git commit -m "Update TFT assets for version ${VERSION} on $(date +'%d-%m-%Y')"
-          git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/hoangdieu606/currency.git
+          git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/hoangdieu606/tft.git
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
