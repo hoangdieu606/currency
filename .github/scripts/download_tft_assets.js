@@ -2,7 +2,7 @@ const axios = require('axios');
 const fs = require('fs').promises;
 const path = require('path');
 const url = require('url');
-const PQueue = require('p-queue');
+const { default: PQueue } = require('p-queue');
 
 async function getCurrentVersion() {
   try {
