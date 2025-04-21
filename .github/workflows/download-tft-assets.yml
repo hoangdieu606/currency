@@ -2,8 +2,12 @@ name: Download TFT Assets
 
 on:
   schedule:
-    - cron: '0 0 * * *' # Chạy hàng ngày lúc nửa đêm
-  workflow_dispatch: # Cho phép kích hoạt thủ công
+    - cron: '0 00 * * *' # Chạy lúc 00:00 UTC
+  workflow_dispatch:
+
+concurrency:
+  group: tft-assets-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   download-assets:
@@ -13,7 +17,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # Lấy toàn bộ lịch sử để xử lý rebase
+          fetch-depth: 0
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -27,18 +31,26 @@ jobs:
         run: |
           git config --global user.name 'github-actions[bot]'
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-          if ! git diff --quiet || ! git diff --staged --quiet; then
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "Unstaged changes detected, stashing them..."
             git add .
-            git commit -m "Commit các thay đổi chưa được commit trước khi pull"
+            git stash
           fi
 
       - name: Pull với rebase từ remote
         run: |
-          git pull --rebase origin main
+          git pull origin main --rebase || { echo "Pull failed, aborting rebase"; git rebase --abort; exit 1; }
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Tạo script JavaScript để kiểm tra version và tải assets
+      - name: Áp dụng stash nếu có
+        run: |
+          if git stash list | grep -q "stash"; then
+            echo "Applying stashed changes..."
+            git stash pop || { echo "Stash pop failed, resolving conflicts may be needed"; exit 1; }
+          fi
+
+      - name: Tạo script JavaScript
         run: |
           mkdir -p .github/scripts
           cat << 'EOF' > .github/scripts/download_tft_assets.js
@@ -62,7 +74,7 @@ jobs:
 
           async function downloadImage(imageUrl, savePath) {
             try {
-              const response = await axios.get(imageUrl, { responseType: 'stream' });
+              const response = await axios.get(imageUrl, { responseType: 'stream', timeout: 30000 });
               if (response.status === 200) {
                 await fs.mkdir(path.dirname(savePath), { recursive: true });
                 const writer = require('fs').createWriteStream(savePath);
@@ -73,33 +85,49 @@ jobs:
                 });
                 console.log(`Đã tải: ${savePath}`);
               } else {
-                console.log(`Tải thất bại: ${imageUrl}`);
+                console.error(`Tải thất bại: ${imageUrl}, status: ${response.status}`);
               }
             } catch (error) {
-              console.log(`Lỗi khi tải ${imageUrl}: ${error.message}`);
+              console.error(`Lỗi khi tải ${imageUrl}: ${error.message}`);
+            }
+          }
+
+          async function fetchWithRetry(url, retries = 3, delay = 1000) {
+            for (let i = 0; i < retries; i++) {
+              try {
+                const response = await axios.get(url, { timeout: 30000 });
+                return response;
+              } catch (error) {
+                if (i === retries - 1) throw error;
+                console.log(`Thử lại ${url} sau ${delay}ms...`);
+                await new Promise(resolve => setTimeout(resolve, delay));
+              }
             }
           }
 
           async function processApi(apiUrl, setNumber, outputDir) {
             try {
-              const response = await axios.get(apiUrl);
-              if (response.status === 200) {
-                const images = [];
-                response.data.data.forEach(item => {
-                  if (item.imageUrl) images.push(item.imageUrl);
-                  if (item.skillImageUrl) images.push(item.skillImageUrl); // Dành cho API champions
-                });
+              const response = await fetchWithRetry(apiUrl);
+              if (response.status !== 200) {
+                console.error(`Gọi API thất bại: ${apiUrl}, status: ${response.status}`);
+                return;
+              }
+              const images = [];
+              response.data.data.forEach(item => {
+                if (item.imageUrl) images.push(item.imageUrl);
+                if (item.skillImageUrl) images.push(item.skillImageUrl);
+              });
 
-                for (const imgUrl of images) {
+              const MAX_IMAGES = 50;
+              await Promise.all(
+                images.slice(0, MAX_IMAGES).map(async (imgUrl) => {
                   const filename = path.basename(url.parse(imgUrl).pathname);
                   const savePath = path.join(outputDir, filename);
                   await downloadImage(imgUrl, savePath);
-                }
-              } else {
-                console.log(`Gọi API thất bại: ${apiUrl}`);
-              }
+                })
+              );
             } catch (error) {
-              console.log(`Lỗi xử lý API ${apiUrl}: ${error.message}`);
+              console.error(`Lỗi xử lý API ${apiUrl}: ${error.message}`);
             }
           }
 
@@ -111,15 +139,14 @@ jobs:
               'https://tft-api.op.gg/api/v1/meta/items?hl=vi_VN'
             ];
 
-            // Lấy version và set từ API đầu tiên
-            const response = await axios.get(apis[0]).catch(err => {
-              console.log(`Không thể lấy version từ API: ${err.message}`);
+            const response = await fetchWithRetry(apis[0]).catch(err => {
+              console.error(`Không thể lấy version từ API: ${err.message}`);
               return null;
             });
             if (!response) return;
 
             const newVersion = response.data.version || '0.0';
-            const setNumber = response.data.set; // Lấy set từ API
+            const setNumber = response.data.set;
             const currentVersion = await getCurrentVersion();
 
             if (newVersion === currentVersion) {
@@ -129,13 +156,13 @@ jobs:
 
             console.log(`Phát hiện version mới: ${newVersion}. Bắt đầu tải assets...`);
             const outputDir = `public/assets/images/set${setNumber}`;
+            await fs.rm(outputDir, { recursive: true, force: true }).catch(() => {});
             await fs.mkdir(outputDir, { recursive: true });
 
             for (const apiUrl of apis) {
               await processApi(apiUrl, setNumber, outputDir);
             }
 
-            // Lưu version mới
             await saveCurrentVersion(newVersion);
           }
 
@@ -154,10 +181,12 @@ jobs:
         run: |
           git config --global user.name 'github-actions[bot]'
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-          git add public/assets/images/* version.json
-          if ! git diff --quiet || ! git diff --staged --quiet; then
-            git commit -m "Cập nhật assets TFT cho set${{ env.SET_NUMBER }} và version mới"
-            git push
-          else
-            echo "Không có thay đổi để commit"
+          git add -A
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+            exit 0
           fi
+          git commit -m "Update TFT assets for set${{ env.SET_NUMBER }} on $(date +'%d-%m-%Y')"
+          git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/hoangdieu606/currency.git
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
