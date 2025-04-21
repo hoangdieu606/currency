@@ -141,11 +141,6 @@ async function main() {
   const setNumber = response.data.set;
   const currentVersion = await getCurrentVersion();
 
-  if (newVersion === currentVersion) {
-    console.log('Version không thay đổi, bỏ qua tải assets');
-    return;
-  }
-
   console.log(`Phát hiện version: ${newVersion}. Bắt đầu tải assets...`);
   const baseDir = `public/assets/images/set${setNumber}`;
   await fs.rm(baseDir, { recursive: true, force: true }).catch(() => {});
