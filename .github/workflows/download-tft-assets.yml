@@ -130,8 +130,14 @@ jobs:
 
               const images = [];
               response.data.data.forEach(item => {
-                if (item.imageUrl) images.push(item.imageUrl);
-                if (item.skillImageUrl) images.push(item.skillImageUrl);
+                // API champions: Dùng tileImageUrl thay vì imageUrl
+                if (apiUrl.includes('champions')) {
+                  if (item.tileImageUrl) images.push(item.tileImageUrl);
+                  if (item.skillImageUrl) images.push(item.skillImageUrl);
+                } else {
+                  // Các API khác (traits, augments, items): Dùng imageUrl
+                  if (item.imageUrl) images.push(item.imageUrl);
+                }
               });
 
               console.log(`Chuẩn bị tải ${images.length} ảnh từ ${apiUrl} vào ${outputDir}...`);
@@ -195,6 +201,9 @@ jobs:
 
             console.log(`Tổng kết: ${totalSuccess} ảnh tải thành công, ${totalFail} ảnh thất bại`);
             await saveCurrentVersion(newVersion);
+
+            // Xuất newVersion vào GITHUB_ENV để sử dụng trong bước commit
+            require('fs').appendFileSync(process.env.GITHUB_ENV, `VERSION=${newVersion}\n`);
           }
 
           main().catch(error => {
@@ -231,7 +240,7 @@ jobs:
             echo "No changes to commit"
             exit 0
           fi
-          git commit -m "Update TFT assets for set${{ env.SET_NUMBER }} on $(date +'%d-%m-%Y')"
+          git commit -m "Update TFT assets for version ${VERSION} on $(date +'%d-%m-%Y')"
           git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/hoangdieu606/currency.git
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
