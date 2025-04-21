@@ -74,8 +74,14 @@ async function processApi(apiUrl, setNumber, subDir) {
 
     const images = [];
     response.data.data.forEach(item => {
-      if (item.imageUrl) images.push(item.imageUrl);
-      if (item.skillImageUrl) images.push(item.skillImageUrl);
+      // API champions: Dùng tileImageUrl thay vì imageUrl
+      if (apiUrl.includes('champions')) {
+        if (item.tileImageUrl) images.push(item.tileImageUrl);
+        if (item.skillImageUrl) images.push(item.skillImageUrl);
+      } else {
+        // Các API khác (traits, augments, items): Dùng imageUrl
+        if (item.imageUrl) images.push(item.imageUrl);
+      }
     });
 
     console.log(`Chuẩn bị tải ${images.length} ảnh từ ${apiUrl} vào ${outputDir}...`);
@@ -139,6 +145,9 @@ async function main() {
 
   console.log(`Tổng kết: ${totalSuccess} ảnh tải thành công, ${totalFail} ảnh thất bại`);
   await saveCurrentVersion(newVersion);
+
+  // Xuất newVersion vào GITHUB_ENV để sử dụng trong bước commit
+  require('fs').appendFileSync(process.env.GITHUB_ENV, `VERSION=${newVersion}\n`);
 }
 
 main().catch(error => {
